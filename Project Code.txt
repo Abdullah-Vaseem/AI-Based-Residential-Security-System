@@ -1,0 +1,120 @@
+import RPi.GPIO as GPIO
+import numpy as np
+import cv2
+import face_recognition
+import os
+import datetime
+import smtplib
+import ssl
+from email.message import EmailMessage
+
+# Set up GPIO for motion sensor
+GPIO.setmode(GPIO.BCM)
+sensor_pin = 4
+GPIO.setup(sensor_pin, GPIO.IN)
+
+path = 'Datastore'
+images = []
+classNames = []
+myList = os.listdir(path)
+print(myList)
+
+for cl in myList:
+    curImg = cv2.imread(f'{path}/{cl}')
+    images.append(curImg)
+    classNames.append(os.path.splitext(cl)[0])
+
+print(classNames)
+
+def findEncodings(images):
+    encodeList = []
+    for img in images:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        encode = face_recognition.face_encodings(img)[0]
+        encodeList.append(encode)
+    return encodeList
+
+encodeListKnown = findEncodings(images)
+print('Encoding Complete')
+
+cap = cv2.VideoCapture(0, cv2.CAP_V4L)
+
+email_sender = 'a*********h@gmail.com'
+email_password = '************'
+email_receiver = '*************h@gmail.com'
+
+subject = 'AI Based Residential Security System'
+body = """
+An Unknown Person Detected
+"""
+
+em = EmailMessage()
+em['From'] = email_sender
+em['To'] = email_receiver
+em['Subject'] = subject
+em.set_content(body)
+
+context = ssl.create_default_context()
+
+motion_detected = False
+
+while True:
+    if GPIO.input(sensor_pin):
+        motion_detected = True
+        print("No Motion Detected")
+    else:
+        motion_detected = False
+        print("Motion Detected")
+    
+    if not motion_detected:
+        success, img = cap.read()
+        imgS = cv2.resize(img, (0, 0), None, 0.25, 0.25)
+        imgS = cv2.cvtColor(imgS, cv2.COLOR_BGR2RGB)
+
+        # find face locations in the current frame
+        facesCurFrame = face_recognition.face_locations(imgS)
+
+        # draw a rectangle around the face detected by the camera
+        for faceLoc in facesCurFrame:
+            y1, x2, y2, x1 = faceLoc
+            y1, x2, y2, x1 = y1*4, x2*4, y2*4, x1*4
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # encode faces in the current frame and compare with known faces
+        encodesCurFrame = face_recognition.face_encodings(imgS, facesCurFrame)
+        for encodeFace, faceLoc in zip(encodesCurFrame, facesCurFrame):
+            matches = face_recognition.compare_faces(encodeListKnown, encodeFace)
+            faceDis = face_recognition.face_distance(encodeListKnown, encodeFace)
+            print(faceDis)
+            matchIndex = np.argmin(faceDis)
+
+            if matches[matchIndex]:
+                name = classNames[matchIndex].upper()
+                print(name)
+
+                y1, x2, y2, x1 = faceLoc
+                y1, x2, y2, x1 = y1*4, x2*4, y2*4, x1*4
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.rectangle(img, (x1, y2-35), (x2, y2), (0, 255, 0), cv2.FILLED)
+                cv2.putText(img, name, (x1+6, y2-6), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
+            else:  # Unknown face detected, send email with attached image
+                y1, x2, y2, x1 = faceLoc
+                y1, x2, y2, x1 = y1 * 4, x2 * 4, y2 * 4, x1 * 4
+                now = datetime.datetime.now()
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.rectangle(img, (x1, y2-35), (x2, y2), (0, 255, 0), cv2.FILLED)
+                cv2.putText(img, "UNKNOWN", (x1+6, y2-6), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
+                folder_path = "/home/abdullah/FinalYearProject/CapturedPics"
+                file_name = f"{folder_path}/unknown_person_{now.strftime('%Y-%m-%d_%H-%M-%S')}.jpg"
+                cv2.imwrite(file_name, img)
+                with open(file_name, 'rb') as f:
+                    image_data = f.read()
+                    em.add_attachment(image_data, maintype='image', subtype='jpg', filename=file_name)
+                with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context) as smtp:
+                    smtp.login(email_sender, email_password)
+                    smtp.sendmail(email_sender, email_receiver, em.as_string())
+        cv2.imshow('webcam', img)
+        cv2.waitKey(1)
+    else:
+        # No motion detected, do nothing
+        pass
